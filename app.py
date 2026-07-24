@@ -1,5 +1,5 @@
 """
-Portfolio Analytics Platform — Streamlit Web App
+Portfolio Analytics Platform — Retail-Friendly Streamlit Web App
 Run locally:   streamlit run app.py
 Deploy free:   push to GitHub, then deploy on share.streamlit.io
 """
@@ -13,7 +13,6 @@ import seaborn as sns
 from fpdf import FPDF
 from datetime import datetime
 import textwrap
-import io
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -22,7 +21,7 @@ warnings.filterwarnings("ignore")
 # PAGE CONFIG
 # ------------------------------------------------------------
 st.set_page_config(
-    page_title="Portfolio Analytics",
+    page_title="Understand Your Portfolio",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -32,20 +31,31 @@ st.markdown(
     """
     <style>
     .stApp { background-color: #0e1117; }
-    .metric-card {
-        background-color: #1a1d24;
-        padding: 16px;
-        border-radius: 10px;
-        border: 1px solid #2a2d34;
+    .verdict-box {
+        background-color: #1a2332;
+        padding: 22px 26px;
+        border-radius: 12px;
+        border-left: 5px solid #4f8ef7;
+        font-size: 17px;
+        line-height: 1.6;
+        margin-bottom: 20px;
     }
-    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; }
+    .plain-text {
+        color: #a0a8b8;
+        font-size: 13px;
+        margin-top: -8px;
+        margin-bottom: 10px;
+    }
+    .badge-high { background-color: #1e5631; color: #7ee8a0; padding: 4px 12px; border-radius: 20px; font-weight: 600; }
+    .badge-medium { background-color: #6b5b1e; color: #f0d878; padding: 4px 12px; border-radius: 20px; font-weight: 600; }
+    .badge-low { background-color: #6b1e1e; color: #f08787; padding: 4px 12px; border-radius: 20px; font-weight: 600; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # ------------------------------------------------------------
-# HELPERS (cached so the app stays fast on repeat runs)
+# CACHED DATA HELPERS
 # ------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_prices(tickers, benchmark, start, end):
@@ -66,6 +76,9 @@ def fetch_sectors(tickers):
     return sector_map
 
 
+# ------------------------------------------------------------
+# CORE MATH HELPERS
+# ------------------------------------------------------------
 def annualize_return(r):
     return (1 + r).prod() ** (252 / len(r)) - 1
 
@@ -129,6 +142,82 @@ def validate_portfolio(df, tol=0.001):
 
 
 # ------------------------------------------------------------
+# PLAIN-LANGUAGE TRANSLATION LAYER
+# ------------------------------------------------------------
+def plain_cagr(cagr, bench_cagr):
+    diff = cagr - bench_cagr
+    if diff > 0.02:
+        return f"Your portfolio grew faster than the market benchmark by about {diff:.1%} per year."
+    elif diff < -0.02:
+        return f"Your portfolio grew slower than the market benchmark by about {abs(diff):.1%} per year."
+    else:
+        return "Your portfolio grew at roughly the same pace as the market benchmark."
+
+
+def plain_sharpe(sh):
+    if sh > 1.0:
+        return "For the risk you took, you earned a strong return — good risk-adjusted performance."
+    elif sh > 0.5:
+        return "For the risk you took, you earned a fair return — not exceptional, not poor."
+    elif sh > 0:
+        return "You earned a positive return, but you took on a lot of risk for it."
+    else:
+        return "The risk you took wasn't rewarded — returns didn't compensate for the ups and downs."
+
+
+def plain_drawdown(dd, recov):
+    recov_text = f"and would have taken about {recov} days to recover" if recov else "and had not yet fully recovered by the end of this period"
+    return (
+        f"If you'd invested at the worst possible time in this window, your money would have "
+        f"temporarily fallen by about {abs(dd):.0%} before recovering, {recov_text}."
+    )
+
+
+def plain_diversification(div_ratio, avg_corr):
+    if div_ratio > 1.3:
+        badge, label = "badge-high", "High"
+        text = "Your stocks tend to move independently of each other — genuine diversification benefit."
+    elif div_ratio > 1.1:
+        badge, label = "badge-medium", "Medium"
+        text = "Your stocks move somewhat together — you have some diversification, but not a lot."
+    else:
+        badge, label = "badge-low", "Low"
+        text = "Your stocks tend to move together — holding many of them isn't spreading your risk as much as it looks."
+    return badge, label, text
+
+
+def plain_concentration(max_sector, max_sector_weight):
+    if max_sector_weight > 0.4:
+        return f"⚠️ Nearly half or more of your portfolio ({max_sector_weight:.0%}) is in {max_sector} — if that sector has a bad year, a large part of your money moves with it."
+    elif max_sector_weight > 0.25:
+        return f"Your largest sector exposure is {max_sector} at {max_sector_weight:.0%} — meaningful, but not extreme, concentration."
+    else:
+        return f"Your largest sector exposure is {max_sector} at {max_sector_weight:.0%} — reasonably spread across sectors."
+
+
+def plain_stress(name, p_loss, b_loss):
+    relative = p_loss - b_loss
+    if relative > 0.03:
+        comp = f"held up better than the market by about {relative:.0%}"
+    elif relative < -0.03:
+        comp = f"fell harder than the market by about {abs(relative):.0%}"
+    else:
+        comp = "moved roughly in line with the market"
+    return f"During the {name}, your portfolio would have lost about {abs(p_loss):.0%} — it {comp}."
+
+
+def build_verdict(cagr, bench_cagr, max_sector, max_sector_weight, div_ratio, dd, n_stocks):
+    growth_word = "grew faster than" if cagr > bench_cagr + 0.02 else ("grew slower than" if cagr < bench_cagr - 0.02 else "grew roughly in line with")
+    div_word = "was spread across genuinely independent stocks" if div_ratio > 1.3 else ("had some diversification" if div_ratio > 1.1 else "moved largely as one block despite holding several stocks")
+    return (
+        f"Over this period, your {n_stocks}-stock portfolio {growth_word} the market benchmark, "
+        f"was concentrated in <b>{max_sector}</b> ({max_sector_weight:.0%} of your money), "
+        f"{div_word}, and would have temporarily lost about <b>{abs(dd):.0%}</b> of its value "
+        f"at the worst point in this period."
+    )
+
+
+# ------------------------------------------------------------
 # PDF REPORT BUILDER
 # ------------------------------------------------------------
 class ReportPDF(FPDF):
@@ -138,12 +227,10 @@ class ReportPDF(FPDF):
 
     def header(self):
         self.set_font("Helvetica", "B", 14)
-        self.cell(0, 10, "Portfolio Analysis Report", new_x="LMARGIN", new_y="NEXT", align="C")
+        self.cell(0, 10, "Your Portfolio, Explained", new_x="LMARGIN", new_y="NEXT", align="C")
         self.set_font("Helvetica", "", 9)
-        self.cell(
-            0, 6, f"{self.client_name}  |  Generated {datetime.now().strftime('%d %b %Y')}",
-            new_x="LMARGIN", new_y="NEXT", align="C",
-        )
+        self.cell(0, 6, f"{self.client_name}  |  Generated {datetime.now().strftime('%d %b %Y')}",
+                   new_x="LMARGIN", new_y="NEXT", align="C")
         self.ln(4)
 
     def section_title(self, title):
@@ -161,73 +248,61 @@ class ReportPDF(FPDF):
             self.cell(0, 5, line, new_x="LMARGIN", new_y="NEXT")
 
 
-def build_pdf_report(client_name, portfolio, summary, beta, alpha, tracking_error, info_ratio,
-                      sortino, var_95, cvar_95, calmar, recov_days, avg_corr, div_ratio, hhi,
-                      eff_holdings, sorted_w, max_sector, max_sector_weight, stress_results,
-                      p50, p5, p95, prob_loss, sim_var_95, sim_cvar_95, n_sims, chart_paths):
+def build_pdf_report(client_name, verdict_text, portfolio, summary, plain_sharpe_text, plain_dd_text,
+                      div_label, div_text, concentration_text, stress_texts, rupee_now, rupee_projected,
+                      chart_paths):
     pdf = ReportPDF(client_name)
     pdf.add_page()
 
-    pdf.section_title("1. Portfolio Holdings")
-    for _, row in portfolio.iterrows():
-        pdf.wrapped_line(f"{row['Ticker']:<15} {row['Weight']:.1%}   Sector: {row.get('Sector', 'N/A')}")
-    pdf.ln(3)
+    pdf.section_title("Your Portfolio in Plain English")
+    plain_verdict = verdict_text.replace("<b>", "").replace("</b>", "")
+    pdf.wrapped_line(plain_verdict, font_size=11)
+    pdf.ln(4)
 
-    pdf.section_title("2. Performance vs Benchmark")
-    for metric in summary.index:
-        p, b = summary.loc[metric, "Portfolio"], summary.loc[metric, "Benchmark"]
-        pdf.wrapped_line(f"{metric:<15} Portfolio: {p:.2%}   Benchmark: {b:.2%}")
-    pdf.wrapped_line(f"Beta: {beta:.2f}  Alpha: {alpha:.2%}  Tracking Error: {tracking_error:.2%}  Info Ratio: {info_ratio:.2f}")
-    pdf.ln(3)
+    pdf.section_title("How Much Did You Earn?")
+    pdf.wrapped_line(f"Portfolio CAGR: {summary.loc['CAGR', 'Portfolio']:.2%}  |  Benchmark CAGR: {summary.loc['CAGR', 'Benchmark']:.2%}")
+    pdf.wrapped_line(f"Rs {rupee_now:,.0f} invested at the start would be worth Rs {rupee_projected:,.0f} today.")
+    pdf.ln(2)
     pdf.image(chart_paths["growth"], w=180)
 
     pdf.add_page()
-    pdf.section_title("3. Risk Metrics")
-    pdf.wrapped_line(f"Sortino Ratio: {sortino:.2f}")
-    pdf.wrapped_line(f"Daily VaR (95%): {var_95:.2%}   CVaR (95%): {cvar_95:.2%}")
-    pdf.wrapped_line(f"Calmar Ratio: {calmar:.2f}")
-    pdf.wrapped_line(f"Drawdown recovery: {recov_days if recov_days else 'not yet recovered'} days")
+    pdf.section_title("Was the Risk Worth It?")
+    pdf.wrapped_line(plain_sharpe_text)
+    pdf.ln(2)
+    pdf.section_title("What's the Worst That Could Have Happened?")
+    pdf.wrapped_line(plain_dd_text)
     pdf.ln(2)
     pdf.image(chart_paths["drawdown"], w=180)
 
     pdf.add_page()
-    pdf.section_title("4. Diversification & Concentration")
-    pdf.wrapped_line(f"Average pairwise correlation: {avg_corr:.2f}   Diversification ratio: {div_ratio:.2f}")
-    pdf.wrapped_line(f"HHI: {hhi:.3f}   Effective holdings: {eff_holdings:.1f}")
-    pdf.wrapped_line(f"Top 3 concentration: {sorted_w.head(3).sum():.1%}")
-    pdf.wrapped_line(f"Largest sector exposure: {max_sector} ({max_sector_weight:.1%})")
+    pdf.section_title(f"Is Your Portfolio Diversified? - {div_label}")
+    pdf.wrapped_line(div_text)
+    pdf.ln(2)
+    pdf.wrapped_line(concentration_text)
     pdf.ln(2)
     pdf.image(chart_paths["corr"], w=120)
     pdf.image(chart_paths["sector"], w=120)
-    pdf.image(chart_paths["riskcontrib"], w=150)
 
     pdf.add_page()
-    pdf.section_title("5. Rolling Analysis")
-    pdf.image(chart_paths["rolling"], w=180)
-
-    pdf.add_page()
-    pdf.section_title("6. Historical Stress Testing")
-    for name, (p_loss, b_loss) in stress_results.items():
-        pdf.wrapped_line(f"{name}: Portfolio {p_loss:.2%}   Benchmark {b_loss:.2%}   Relative {p_loss - b_loss:+.2%}")
-
-    pdf.add_page()
-    pdf.section_title("7. Monte Carlo Forward Simulation (1-Year)")
-    pdf.wrapped_line(f"Simulations run: {n_sims:,}")
-    pdf.wrapped_line(f"Median projected value: Rs {p50:,.0f}")
-    pdf.wrapped_line(f"Downside (5th pct): Rs {p5:,.0f}   Upside (95th pct): Rs {p95:,.0f}")
-    pdf.wrapped_line(f"Probability of loss over 1Y: {prob_loss:.1%}")
-    pdf.wrapped_line(f"Simulated 1Y VaR(95%): Rs {sim_var_95:,.0f}   CVaR(95%): Rs {sim_cvar_95:,.0f}")
+    pdf.section_title("How Would This Have Survived a Market Crash?")
+    for t in stress_texts:
+        pdf.wrapped_line(t)
     pdf.ln(2)
     pdf.image(chart_paths["montecarlo"], w=180)
 
     pdf.add_page()
-    pdf.section_title("8. Limitations of This Analysis")
+    pdf.section_title("Your Holdings")
+    for _, row in portfolio.iterrows():
+        pdf.wrapped_line(f"{row['Ticker']:<15} {row['Weight']:.1%}   Sector: {row.get('Sector', 'N/A')}")
+
+    pdf.add_page()
+    pdf.section_title("Good to Know")
     limitations = [
+        "This is an educational analysis, not personalized investment advice.",
+        "Past performance does not guarantee future results.",
         "Does not account for taxes, brokerage, or transaction costs.",
-        "Assumes adjusted price data fully reflects corporate actions.",
-        "Mutual fund/ETF underlying-holding overlap is not analysed in this version.",
-        "Monte Carlo assumes historical volatility/correlation persist and returns are normal - understates tail risk.",
-        "Does not reflect investor-specific cash flows unless purchase/withdrawal history is supplied.",
+        "Mutual fund/ETF overlap is not analysed in this version.",
+        "Simulations assume future patterns resemble the past - real markets can behave differently.",
     ]
     for l in limitations:
         pdf.wrapped_line(f"- {l}", font_size=9)
@@ -238,7 +313,7 @@ def build_pdf_report(client_name, portfolio, summary, beta, alpha, tracking_erro
 # ------------------------------------------------------------
 # SIDEBAR — INPUTS
 # ------------------------------------------------------------
-st.sidebar.title("📊 Portfolio Setup")
+st.sidebar.title("📊 Your Portfolio")
 
 input_mode = st.sidebar.radio("Portfolio input", ["Use sample portfolio", "Upload CSV/Excel"])
 
@@ -250,6 +325,7 @@ if input_mode == "Upload CSV/Excel":
         else:
             portfolio = pd.read_excel(uploaded_file)
         portfolio.columns = [c.strip().title() for c in portfolio.columns]
+        portfolio = portfolio[portfolio["Ticker"].astype(str).str.upper() != "TOTAL"]
         portfolio["Weight"] = portfolio["Weight"].astype(str).str.replace("%", "").astype(float)
         if portfolio["Weight"].sum() > 1.5:
             portfolio["Weight"] = portfolio["Weight"] / 100
@@ -262,30 +338,33 @@ else:
     })
 
 st.sidebar.markdown("---")
-client_name = st.sidebar.text_input("Client name", "Sample Client")
-start_date = st.sidebar.date_input("Backtest start", pd.to_datetime("2020-01-01"))
-end_date = st.sidebar.date_input("Backtest end", pd.to_datetime("today"))
-initial_investment = st.sidebar.number_input("Initial investment (₹)", value=1_000_000, step=100000)
-benchmark = st.sidebar.selectbox("Benchmark", ["^NSEI", "^CRSLDX", "^CNXMID"], format_func=lambda x: {
+client_name = st.sidebar.text_input("Your name", "Investor")
+start_date = st.sidebar.date_input("Look back from", pd.to_datetime("2020-01-01"))
+end_date = st.sidebar.date_input("Look back to", pd.to_datetime("today"))
+initial_investment = st.sidebar.number_input("If you'd invested (₹)", value=1_000_000, step=100000)
+benchmark = st.sidebar.selectbox("Compare against", ["^NSEI", "^CRSLDX", "^CNXMID"], format_func=lambda x: {
     "^NSEI": "Nifty 50", "^CRSLDX": "Nifty 500", "^CNXMID": "Nifty Midcap"
 }.get(x, x))
 rebalance = st.sidebar.selectbox("Rebalancing", ["monthly", "quarterly", "annual", "none"])
-risk_free_rate = st.sidebar.slider("Risk-free rate", 0.0, 0.12, 0.065, 0.005, format="%.3f")
-n_simulations = st.sidebar.slider("Monte Carlo simulations", 1000, 20000, 10000, 1000)
+n_simulations = st.sidebar.slider("Simulation detail", 1000, 8000, 2500, 500,
+                                   help="Higher = more precise but slower. 2500 is a good default.")
 
-run_button = st.sidebar.button("🚀 Run Analysis", type="primary", use_container_width=True)
+with st.sidebar.expander("Advanced settings"):
+    risk_free_rate = st.slider("Risk-free rate", 0.0, 0.12, 0.065, 0.005, format="%.3f")
+
+run_button = st.sidebar.button("🚀 Understand My Portfolio", type="primary", use_container_width=True)
 
 # ------------------------------------------------------------
 # MAIN
 # ------------------------------------------------------------
-st.title("Portfolio Analytics Platform")
-st.caption("Upload a listed-equity portfolio to get performance, risk, diversification, and stress-test analysis.")
+st.title("Understand Your Portfolio")
+st.caption("Upload your stock portfolio and get a plain-English breakdown of how it's really performing.")
 
 if portfolio is None:
     st.info("Upload a CSV/Excel file with `Ticker` and `Weight` columns from the sidebar to begin.")
     st.stop()
 
-with st.expander("📋 Portfolio input", expanded=not run_button):
+with st.expander("📋 Your portfolio input", expanded=not run_button):
     st.dataframe(portfolio, use_container_width=True)
 
 issues = validate_portfolio(portfolio)
@@ -293,7 +372,7 @@ if issues:
     for i in issues:
         st.warning(i)
 else:
-    st.success("Portfolio passes validation.")
+    st.success("Portfolio looks good.")
 
 if not run_button:
     st.stop()
@@ -319,7 +398,7 @@ stock_prices = prices[tickers]
 bench_prices = prices[benchmark]
 daily_returns = stock_prices.pct_change().dropna()
 
-with st.spinner("Fetching sector data..."):
+with st.spinner("Understanding your sectors..."):
     sector_map = fetch_sectors(tickers)
 portfolio["Sector"] = portfolio["Ticker"].map(sector_map)
 
@@ -332,9 +411,6 @@ port_cum = (1 + portfolio_returns).cumprod()
 bench_cum = (1 + bench_returns).cumprod()
 
 beta = np.cov(portfolio_returns, bench_returns)[0, 1] / np.var(bench_returns)
-alpha = annualize_return(portfolio_returns) - (risk_free_rate + beta * (annualize_return(bench_returns) - risk_free_rate))
-tracking_error = (portfolio_returns - bench_returns).std() * np.sqrt(252)
-info_ratio = (annualize_return(portfolio_returns) - annualize_return(bench_returns)) / tracking_error
 recov_days = recovery_days(port_cum)
 
 summary = pd.DataFrame({
@@ -344,39 +420,35 @@ summary = pd.DataFrame({
                   sharpe(bench_returns, risk_free_rate), max_drawdown(bench_cum)],
 }, index=["CAGR", "Volatility", "Sharpe", "Max Drawdown"])
 
-downside = portfolio_returns[portfolio_returns < 0]
-sortino = (annualize_return(portfolio_returns) - risk_free_rate) / (downside.std() * np.sqrt(252))
-var_95 = np.percentile(portfolio_returns, 5)
-cvar_95 = portfolio_returns[portfolio_returns <= var_95].mean()
-calmar = annualize_return(portfolio_returns) / abs(max_drawdown(port_cum))
-
 corr = daily_returns.corr()
 avg_corr = (corr.sum().sum() - len(corr)) / (len(corr) ** 2 - len(corr)) if len(corr) > 1 else 0
 asset_vols = daily_returns.std() * np.sqrt(252)
 div_ratio = (weights * asset_vols).sum() / annualize_vol(portfolio_returns)
 
-sorted_w = weights.sort_values(ascending=False)
-hhi = (weights ** 2).sum()
-eff_holdings = 1 / hhi
-
 sector_weights = portfolio.groupby("Sector")["Weight"].sum().sort_values(ascending=False)
 max_sector = sector_weights.index[0]
 max_sector_weight = sector_weights.iloc[0]
 
-cov = daily_returns.cov() * 252
-w_arr = weights.values
-port_var = w_arr @ cov.values @ w_arr
-marginal_contrib = cov.values @ w_arr
-pct_contrib = (w_arr * marginal_contrib) / port_var
-risk_contrib = pd.Series(pct_contrib, index=weights.index).sort_values(ascending=False)
+with st.spinner(f"Running {n_simulations:,} future scenarios..."):
+    np.random.seed(42)
+    mu = daily_returns.mean().values
+    cov_matrix = daily_returns.cov().values
+    L = np.linalg.cholesky(cov_matrix)
+    horizon = 252
+    w_arr = weights.values.astype(np.float32)
+    z = np.random.normal(size=(n_simulations, horizon, len(tickers))).astype(np.float32)
+    correlated_shocks = z @ L.T.astype(np.float32)
+    daily_asset_returns = mu.astype(np.float32) + correlated_shocks
+    daily_port_returns = daily_asset_returns @ w_arr
+    sim_paths = initial_investment * np.cumprod(1 + daily_port_returns, axis=1)
+    sim_final_values = sim_paths[:, -1]
+    del z, correlated_shocks, daily_asset_returns
 
-window = min(252, len(portfolio_returns) - 1)
-rolling_ret = portfolio_returns.rolling(window).apply(lambda x: (1 + x).prod() ** (252 / window) - 1)
-rolling_vol = portfolio_returns.rolling(window).std() * np.sqrt(252)
-rolling_sharpe = (rolling_ret - risk_free_rate) / rolling_vol
+p5, p50, p95 = np.percentile(sim_final_values, [5, 50, 95])
+prob_loss = (sim_final_values < initial_investment).mean()
 
 stress_periods = {
-    "COVID Crash": ("2020-02-01", "2020-04-30"),
+    "COVID Crash (Feb-Apr 2020)": ("2020-02-01", "2020-04-30"),
     "2022 Correction": ("2022-01-01", "2022-06-30"),
 }
 stress_results = {}
@@ -388,134 +460,134 @@ for name, (s, e) in stress_periods.items():
     b_loss = (1 + bench_returns[mask]).prod() - 1
     stress_results[name] = (p_loss, b_loss)
 
-with st.spinner(f"Running {n_simulations:,} Monte Carlo simulations..."):
-    np.random.seed(42)
-    mu = daily_returns.mean().values
-    cov_matrix = daily_returns.cov().values
-    L = np.linalg.cholesky(cov_matrix)
-    horizon = 252
-    z = np.random.normal(size=(n_simulations, horizon, len(tickers)))
-    correlated_shocks = z @ L.T
-    daily_asset_returns = mu + correlated_shocks
-    daily_port_returns = daily_asset_returns @ w_arr
-    sim_paths = initial_investment * np.cumprod(1 + daily_port_returns, axis=1)
-    sim_final_values = sim_paths[:, -1]
+# ------------------------------------------------------------
+# PLAIN-LANGUAGE VERDICT
+# ------------------------------------------------------------
+verdict_text = build_verdict(
+    summary.loc["CAGR", "Portfolio"], summary.loc["CAGR", "Benchmark"],
+    max_sector, max_sector_weight, div_ratio, summary.loc["Max Drawdown", "Portfolio"], len(tickers)
+)
 
-p5, p25, p50, p75, p95 = np.percentile(sim_final_values, [5, 25, 50, 75, 95])
-prob_loss = (sim_final_values < initial_investment).mean()
-sim_var_95 = initial_investment - p5
-sim_cvar_95 = initial_investment - sim_final_values[sim_final_values <= p5].mean()
+st.markdown(f'<div class="verdict-box">📌 {verdict_text}</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------
-# DASHBOARD DISPLAY
+# HOW MUCH DID YOU EARN
 # ------------------------------------------------------------
-st.markdown("## Performance Overview")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("CAGR", f"{summary.loc['CAGR', 'Portfolio']:.2%}", f"{summary.loc['CAGR', 'Portfolio'] - summary.loc['CAGR', 'Benchmark']:+.2%} vs bench")
-c2.metric("Sharpe Ratio", f"{summary.loc['Sharpe', 'Portfolio']:.2f}")
-c3.metric("Max Drawdown", f"{summary.loc['Max Drawdown', 'Portfolio']:.2%}")
-c4.metric("Final Value", f"₹{portfolio_value.iloc[-1]:,.0f}")
+st.markdown("## 💰 How Much Did You Earn?")
+c1, c2 = st.columns(2)
+with c1:
+    st.metric("If you'd invested", f"₹{initial_investment:,.0f}")
+with c2:
+    st.metric("It would be worth today", f"₹{portfolio_value.iloc[-1]:,.0f}",
+               f"{(portfolio_value.iloc[-1] / initial_investment - 1):+.1%}")
+st.markdown(f'<p class="plain-text">{plain_cagr(summary.loc["CAGR", "Portfolio"], summary.loc["CAGR", "Benchmark"])}</p>', unsafe_allow_html=True)
 
 fig1, ax1 = plt.subplots(figsize=(10, 4))
-pd.DataFrame({"Portfolio": port_cum, "Benchmark": bench_cum}).plot(ax=ax1)
-ax1.set_title("Portfolio vs Benchmark (Growth of ₹1)")
+pd.DataFrame({"Your Portfolio": port_cum * initial_investment, "Market Benchmark": bench_cum * initial_investment}).plot(ax=ax1)
+ax1.set_title("Growth of Your Investment Over Time")
+ax1.set_ylabel("Value (₹)")
 st.pyplot(fig1)
 fig1.savefig("/tmp/chart_growth.png", dpi=150)
 
-st.markdown("## Risk Metrics")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Sortino", f"{sortino:.2f}")
-c2.metric("Daily VaR (95%)", f"{var_95:.2%}")
-c3.metric("Daily CVaR (95%)", f"{cvar_95:.2%}")
-c4.metric("Calmar", f"{calmar:.2f}")
+# ------------------------------------------------------------
+# WAS THE RISK WORTH IT
+# ------------------------------------------------------------
+st.markdown("## ⚖️ Was the Risk Worth It?")
+st.write(plain_sharpe(summary.loc["Sharpe", "Portfolio"]))
+dd_text = plain_drawdown(summary.loc["Max Drawdown", "Portfolio"], recov_days)
+st.write(dd_text)
 
 fig3, ax3 = plt.subplots(figsize=(10, 3))
-drawdown_series(port_cum).plot(ax=ax3, color="red")
-ax3.set_title("Portfolio Drawdown")
+drawdown_series(port_cum).plot(ax=ax3, color="#e05c5c")
+ax3.set_title("How Far Below Its Peak Your Portfolio Fell, Over Time")
+ax3.set_ylabel("% Below Peak")
 st.pyplot(fig3)
 fig3.savefig("/tmp/chart_drawdown.png", dpi=150)
 
-st.markdown("## Diversification & Concentration")
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Avg Correlation", f"{avg_corr:.2f}")
-c2.metric("Diversification Ratio", f"{div_ratio:.2f}")
-c3.metric("Effective Holdings", f"{eff_holdings:.1f} / {len(weights)}")
-c4.metric("Top Sector", f"{max_sector}", f"{max_sector_weight:.1%}")
+with st.expander("See the technical numbers behind this"):
+    st.dataframe(summary.style.format("{:.2%}"), use_container_width=True)
+    st.write(f"Beta: {beta:.2f} — your portfolio moves about {beta:.1f}x as much as the market on average.")
+
+# ------------------------------------------------------------
+# DIVERSIFICATION
+# ------------------------------------------------------------
+st.markdown("## 🧩 Is Your Portfolio Diversified?")
+badge_class, div_label, div_text = plain_diversification(div_ratio, avg_corr)
+st.markdown(f'<span class="{badge_class}">{div_label} Diversification</span>', unsafe_allow_html=True)
+st.write(div_text)
+concentration_text = plain_concentration(max_sector, max_sector_weight)
+st.write(concentration_text)
 
 col1, col2 = st.columns(2)
 with col1:
     fig2, ax2 = plt.subplots(figsize=(6, 5))
     sns.heatmap(corr, annot=True, cmap="coolwarm", center=0, fmt=".2f", ax=ax2)
-    ax2.set_title("Correlation Matrix")
+    ax2.set_title("Which of Your Stocks Move Together")
     st.pyplot(fig2)
     fig2.savefig("/tmp/chart_corr.png", dpi=150)
 with col2:
     fig6, ax6 = plt.subplots(figsize=(6, 5))
     sector_weights.plot(kind="barh", ax=ax6, color="steelblue")
-    ax6.set_title("Sector Exposure")
+    ax6.set_title("Where Your Money Is Invested (By Sector)")
     st.pyplot(fig6)
     fig6.savefig("/tmp/chart_sector.png", dpi=150)
 
-fig5, ax5 = plt.subplots(figsize=(10, 4))
-risk_contrib.sort_values().plot(kind="barh", ax=ax5, color="darkorange")
-ax5.set_title("Risk Contribution by Stock")
-st.pyplot(fig5)
-fig5.savefig("/tmp/chart_riskcontrib.png", dpi=150)
-
-st.markdown("## Rolling Analysis (1Y window)")
-fig4, axes4 = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
-rolling_ret.plot(ax=axes4[0], title="Rolling Return")
-rolling_vol.plot(ax=axes4[1], title="Rolling Volatility")
-rolling_sharpe.plot(ax=axes4[2], title="Rolling Sharpe")
-fig4.tight_layout()
-st.pyplot(fig4)
-fig4.savefig("/tmp/chart_rolling.png", dpi=150)
-
-st.markdown("## Historical Stress Testing")
+# ------------------------------------------------------------
+# STRESS TEST
+# ------------------------------------------------------------
+st.markdown("## 📉 How Would This Have Survived a Market Crash?")
+stress_texts = []
 for name, (p_loss, b_loss) in stress_results.items():
-    st.write(f"**{name}**: Portfolio `{p_loss:.2%}` | Benchmark `{b_loss:.2%}` | Relative `{p_loss - b_loss:+.2%}`")
+    t = plain_stress(name, p_loss, b_loss)
+    stress_texts.append(t)
+    st.write(f"**{name}**: {t}")
 
-st.markdown(f"## Monte Carlo Simulation ({n_simulations:,} paths, 1-year forward)")
-c1, c2, c3 = st.columns(3)
-c1.metric("Median Outcome", f"₹{p50:,.0f}")
-c2.metric("Probability of Loss", f"{prob_loss:.1%}")
-c3.metric("1Y VaR (95%)", f"₹{sim_var_95:,.0f}")
+# ------------------------------------------------------------
+# FUTURE SCENARIOS (Monte Carlo, plain framing)
+# ------------------------------------------------------------
+st.markdown("## 🔮 What Might Happen Next Year?")
+st.write(
+    f"Based on how your stocks have historically moved, if you ran this forward one year "
+    f"{n_simulations:,} different ways: a typical outcome would leave you with about "
+    f"**₹{p50:,.0f}**, a bad-luck outcome around **₹{p5:,.0f}**, and a good-luck outcome around "
+    f"**₹{p95:,.0f}**. There's roughly a **{prob_loss:.0%} chance** you'd end the year with less than you started."
+)
 
 fig7, ax7 = plt.subplots(figsize=(10, 5))
 pct = np.percentile(sim_paths, [5, 25, 50, 75, 95], axis=0)
 days = np.arange(horizon)
-ax7.fill_between(days, pct[0], pct[4], alpha=0.15, color="steelblue", label="5th-95th pct")
-ax7.fill_between(days, pct[1], pct[3], alpha=0.3, color="steelblue", label="25th-75th pct")
-ax7.plot(days, pct[2], color="navy", linewidth=2, label="Median path")
-ax7.axhline(initial_investment, color="red", linestyle="--", alpha=0.5, label="Initial investment")
+ax7.fill_between(days, pct[0], pct[4], alpha=0.15, color="steelblue", label="Unlikely range")
+ax7.fill_between(days, pct[1], pct[3], alpha=0.3, color="steelblue", label="Likely range")
+ax7.plot(days, pct[2], color="navy", linewidth=2, label="Typical path")
+ax7.axhline(initial_investment, color="red", linestyle="--", alpha=0.5, label="What you started with")
 ax7.legend()
-ax7.set_title("Monte Carlo Fan Chart")
+ax7.set_title("Possible Paths for Your Portfolio Over the Next Year")
+ax7.set_ylabel("Value (₹)")
 st.pyplot(fig7)
 fig7.savefig("/tmp/chart_montecarlo.png", dpi=150)
 
 # ------------------------------------------------------------
 # PDF DOWNLOAD
 # ------------------------------------------------------------
-st.markdown("## Download Report")
+st.markdown("## 📄 Download Your Report")
 chart_paths = {
     "growth": "/tmp/chart_growth.png", "drawdown": "/tmp/chart_drawdown.png",
     "corr": "/tmp/chart_corr.png", "sector": "/tmp/chart_sector.png",
-    "riskcontrib": "/tmp/chart_riskcontrib.png", "rolling": "/tmp/chart_rolling.png",
     "montecarlo": "/tmp/chart_montecarlo.png",
 }
 pdf_bytes = build_pdf_report(
-    client_name, portfolio, summary, beta, alpha, tracking_error, info_ratio,
-    sortino, var_95, cvar_95, calmar, recov_days, avg_corr, div_ratio, hhi,
-    eff_holdings, sorted_w, max_sector, max_sector_weight, stress_results,
-    p50, p5, p95, prob_loss, sim_var_95, sim_cvar_95, n_simulations, chart_paths,
+    client_name, verdict_text, portfolio, summary,
+    plain_sharpe(summary.loc["Sharpe", "Portfolio"]), dd_text,
+    div_label, div_text, concentration_text, stress_texts,
+    initial_investment, portfolio_value.iloc[-1], chart_paths,
 )
 st.download_button(
-    "📄 Download Full PDF Report", data=pdf_bytes,
-    file_name=f"Portfolio_Report_{client_name.replace(' ', '_')}.pdf",
+    "📄 Download My Portfolio Report (PDF)", data=pdf_bytes,
+    file_name=f"My_Portfolio_Report_{client_name.replace(' ', '_')}.pdf",
     mime="application/pdf", type="primary",
 )
 
 st.caption(
-    "Disclaimer: This is an analytical tool, not investment advice. Does not account for taxes, "
+    "This is an educational tool, not investment advice. It does not account for taxes, "
     "brokerage, or transaction costs. Past performance does not guarantee future results."
 )
