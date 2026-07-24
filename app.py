@@ -240,7 +240,17 @@ class ReportPDF(FPDF):
         self.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT", fill=True)
         self.ln(2)
 
+    def _pdf_safe(self, text):
+        replacements = {
+            "\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'",
+            "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u20b9": "Rs ",
+        }
+        for uni, rep in replacements.items():
+            text = text.replace(uni, rep)
+        return text.encode("latin-1", errors="ignore").decode("latin-1")
+
     def wrapped_line(self, text, font_size=10, width_chars=95):
+        text = self._pdf_safe(text)
         self.set_x(self.l_margin)
         self.set_font("Helvetica", "", font_size)
         for line in textwrap.wrap(text, width=width_chars) or [""]:
